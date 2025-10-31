@@ -17,6 +17,9 @@ NSString * const kACSThumbnailKey = @"thumbnail";
 NSString * const kACSFilenameKey = @"filename";
 NSString * const kACSContentsDataKey = @"data";
 NSString * const kACSImageRepKey = @"imagerep";
+NSString * const kACSAssetTypeKey = @"assetType";
+NSString * const kACSAssetTypeImage = @"image";
+NSString * const kACSAssetTypeDocument = @"document";
 
 NSString * const kAssetCatalogReaderErrorDomain = @"br.com.guilhermerambo.AssetCatalogReader";
 
@@ -160,7 +163,12 @@ NSString * const kAssetCatalogReaderErrorDomain = @"br.com.guilhermerambo.AssetC
                         continue;
                     }
 
+                    // Handle CUINamedData (documents like markdown files)
                     if ([namedImage isKindOfClass:[CUINamedData class]]) {
+                        NSDictionary *documentDesc = [self processNamedData:(CUINamedData *)namedImage];
+                        if (documentDesc) {
+                            [self.mutableImages addObject:documentDesc];
+                        }
                         loadedItemCount++;
                         continue;
                     }
@@ -298,8 +306,36 @@ NSString * const kAssetCatalogReaderErrorDomain = @"br.com.guilhermerambo.AssetC
                 if (self.cancelled) return;
 
                 [self.mutableImages addObject:desc];
+            } else if (rendition.data && rendition.data.length > 0) {
+                // Handle non-image data (documents, etc.)
+                NSString *extension = [self fileExtensionForData:rendition.data name:rendition.name];
+                NSString *filename = [NSString stringWithFormat:@"%@.%@", [self cleanupRenditionName:rendition.name], extension];
+                
+                if (self.resourceConstrained) {
+                    NSDictionary *desc = @{
+                        kACSNameKey: rendition.name,
+                        kACSFilenameKey: filename,
+                        kACSContentsDataKey: rendition.data,
+                        kACSAssetTypeKey: kACSAssetTypeDocument
+                    };
+                    
+                    if (self.cancelled) return;
+                    [self.mutableImages addObject:desc];
+                } else {
+                    NSImage *thumbnail = [self createDocumentThumbnailForExtension:extension];
+                    NSDictionary *desc = @{
+                        kACSNameKey: rendition.name,
+                        kACSFilenameKey: filename,
+                        kACSContentsDataKey: rendition.data,
+                        kACSThumbnailKey: thumbnail,
+                        kACSAssetTypeKey: kACSAssetTypeDocument
+                    };
+                    
+                    if (self.cancelled) return;
+                    [self.mutableImages addObject:desc];
+                }
             } else {
-                NSLog(@"The rendition %@ doesn't have an image, It is probably an effect or material.", rendition.name);
+                NSLog(@"The rendition %@ doesn't have an image or data, It is probably an effect or material.", rendition.name);
             }
 
             loadedItemCount++;
@@ -513,6 +549,152 @@ NSString * const kAssetCatalogReaderErrorDomain = @"br.com.guilhermerambo.AssetC
     }
     
     return _catalogHasRetinaContent;
+}
+
+- (NSDictionary *)processNamedData:(CUINamedData *)namedData
+{
+    if (!namedData || !namedData.data) {
+        return nil;
+    }
+    
+    NSData *data = namedData.data;
+    NSString *name = namedData.name;
+    
+    // Determine file extension based on data content
+    NSString *extension = [self fileExtensionForData:data name:name];
+    NSString *filename = [NSString stringWithFormat:@"%@.%@", name, extension];
+    
+    if (_resourceConstrained) {
+        return @{
+            kACSNameKey: name,
+            kACSFilenameKey: filename,
+            kACSContentsDataKey: data,
+            kACSAssetTypeKey: kACSAssetTypeDocument
+        };
+    } else {
+        // Create a placeholder thumbnail for non-image data
+        NSImage *thumbnail = [self createDocumentThumbnailForExtension:extension];
+        
+        return @{
+            kACSNameKey: name,
+            kACSFilenameKey: filename,
+            kACSContentsDataKey: data,
+            kACSThumbnailKey: thumbnail,
+            kACSAssetTypeKey: kACSAssetTypeDocument
+        };
+    }
+}
+
+- (NSString *)fileExtensionForData:(NSData *)data name:(NSString *)name
+{
+    if (!data || data.length == 0) {
+        return @"bin";
+    }
+    
+    // Check if name already has an extension
+    NSString *existingExtension = [name pathExtension];
+    if (existingExtension.length > 0) {
+        return existingExtension;
+    }
+    
+    // Try to detect file type from content
+    const unsigned char *bytes = (const unsigned char *)data.bytes;
+    NSUInteger length = data.length;
+    
+    // Check for text-based formats
+    if (length > 0) {
+        // Try to decode as UTF-8 text
+        NSString *textContent = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        if (textContent) {
+            // Check for markdown patterns
+            if ([textContent containsString:@"#"] || 
+                [textContent containsString:@"##"] || 
+                [textContent containsString:@"```"] ||
+                [textContent containsString:@"["] && [textContent containsString:@"]("]) {
+                return @"md";
+            }
+            
+            // Check for HTML
+            if ([textContent containsString:@"<html"] || [textContent containsString:@"<!DOCTYPE"]) {
+                return @"html";
+            }
+            
+            // Check for JSON
+            if ([textContent hasPrefix:@"{"] || [textContent hasPrefix:@"["]) {
+                return @"json";
+            }
+            
+            // Check for XML
+            if ([textContent hasPrefix:@"<?xml"] || [textContent containsString:@"<plist"]) {
+                return @"xml";
+            }
+            
+            // Default to text
+            return @"txt";
+        }
+    }
+    
+    // Check binary formats
+    if (length >= 4) {
+        // PNG
+        if (bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47) {
+            return @"png";
+        }
+        // JPEG
+        if (bytes[0] == 0xFF && bytes[1] == 0xD8) {
+            return @"jpg";
+        }
+        // PDF
+        if (bytes[0] == 0x25 && bytes[1] == 0x50 && bytes[2] == 0x44 && bytes[3] == 0x46) {
+            return @"pdf";
+        }
+    }
+    
+    return @"bin";
+}
+
+- (NSImage *)createDocumentThumbnailForExtension:(NSString *)extension
+{
+    NSSize size = self.thumbnailSize.width > 0 ? self.thumbnailSize : NSMakeSize(128, 128);
+    
+    return [NSImage imageWithSize:size flipped:NO drawingHandler:^BOOL(NSRect dstRect) {
+        // Draw background
+        [[NSColor colorWithWhite:0.95 alpha:1.0] setFill];
+        NSRectFill(dstRect);
+        
+        // Draw border
+        [[NSColor colorWithWhite:0.7 alpha:1.0] setStroke];
+        NSBezierPath *border = [NSBezierPath bezierPathWithRect:NSInsetRect(dstRect, 1, 1)];
+        [border stroke];
+        
+        // Draw document icon (simplified)
+        CGFloat iconSize = size.width * 0.6;
+        NSRect iconRect = NSMakeRect((size.width - iconSize) / 2, 
+                                     (size.height - iconSize) / 2 + size.height * 0.1,
+                                     iconSize, 
+                                     iconSize * 0.8);
+        
+        [[NSColor whiteColor] setFill];
+        NSBezierPath *docPath = [NSBezierPath bezierPathWithRect:iconRect];
+        [docPath fill];
+        
+        [[NSColor colorWithWhite:0.5 alpha:1.0] setStroke];
+        [docPath stroke];
+        
+        // Draw extension text
+        NSDictionary *attrs = @{
+            NSFontAttributeName: [NSFont systemFontOfSize:size.width * 0.15],
+            NSForegroundColorAttributeName: [NSColor colorWithWhite:0.3 alpha:1.0]
+        };
+        
+        NSString *displayText = [extension uppercaseString];
+        NSSize textSize = [displayText sizeWithAttributes:attrs];
+        NSPoint textPoint = NSMakePoint((size.width - textSize.width) / 2,
+                                        (size.height - textSize.height) / 2 - size.height * 0.05);
+        [displayText drawAtPoint:textPoint withAttributes:attrs];
+        
+        return YES;
+    }];
 }
 
 @end

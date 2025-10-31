@@ -11,6 +11,10 @@
 
 @interface CUINamedData : NSObject
 
+@property (copy, nonatomic) NSString *name;
+@property (readonly, nonatomic) NSData *data;
+@property (readonly, nonatomic) CGFloat scale;
+
 @end
 
 @interface CUINamedImage : NSObject
