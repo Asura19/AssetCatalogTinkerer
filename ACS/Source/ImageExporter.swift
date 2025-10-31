@@ -51,7 +51,8 @@ public struct ImageExporter {
         var counter = 1
         var newFilename = baseFilename
 
-        while fileManager.fileExists(atPath: directory.appendingPathComponent(newFilename).appendingPathExtension(fileExtension).path) && counter < 100 {
+        // No limit on counter - keep incrementing until we find an available name
+        while fileManager.fileExists(atPath: directory.appendingPathComponent(newFilename).appendingPathExtension(fileExtension).path) {
             newFilename = "\(baseFilename)_\(counter)"
             counter += 1
         }

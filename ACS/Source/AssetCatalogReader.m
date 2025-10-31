@@ -35,6 +35,9 @@ NSString * const kAssetCatalogReaderErrorDomain = @"br.com.guilhermerambo.AssetC
 @property (nonatomic, assign, getter=isResourceConstrained) BOOL resourceConstrained;
 @property (nonatomic, assign) int maxCount;
 
+// Tracks filenames to avoid duplicates
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *filenameCountMap;
+
 @end
 
 @implementation AssetCatalogReader
@@ -58,6 +61,13 @@ NSString * const kAssetCatalogReaderErrorDomain = @"br.com.guilhermerambo.AssetC
     if (!_mutableImages) _mutableImages = [NSMutableArray new];
     
     return _mutableImages;
+}
+
+- (NSMutableDictionary<NSString *, NSNumber *> *)filenameCountMap
+{
+    if (!_filenameCountMap) _filenameCountMap = [NSMutableDictionary new];
+    
+    return _filenameCountMap;
 }
 
 - (NSArray <NSDictionary <NSString *, NSObject *> *> *)images
@@ -183,10 +193,10 @@ NSString * const kAssetCatalogReaderErrorDomain = @"br.com.guilhermerambo.AssetC
                             continue;
                         }
                         
-                        filename = [NSString stringWithFormat:@"%@.png", namedImage.name];
+                        filename = [self makeUniqueFilename:[NSString stringWithFormat:@"%@.png", namedImage.name]];
                         image = stack.flattenedImage;
                     } else {
-                        filename = [self filenameForAssetNamed:namedImage.name scale:namedImage.scale presentationState:kCoreThemeStateNone];
+                        filename = [self makeUniqueFilename:[self filenameForAssetNamed:namedImage.name scale:namedImage.scale presentationState:kCoreThemeStateNone]];
                         image = namedImage.image;
                     }
                     
@@ -279,7 +289,7 @@ NSString * const kAssetCatalogReaderErrorDomain = @"br.com.guilhermerambo.AssetC
                     }
                     return YES;
                 }];
-                NSString *const filename = [self filenameForVectorAssetNamed:[self cleanupRenditionName:rendition.name] renderingMode:rendition.vectorGlyphRenderingMode weight:key.themeGlyphWeight size:key.themeGlyphSize];
+                NSString *const filename = [self makeUniqueFilename:[self filenameForVectorAssetNamed:[self cleanupRenditionName:rendition.name] renderingMode:rendition.vectorGlyphRenderingMode weight:key.themeGlyphWeight size:key.themeGlyphSize]];
                 NSDictionary *desc = [self imageDescriptionWithName:rendition.name filename:filename representation:imageRep contentsData:^NSData *{
                     NSMutableData *data = [NSMutableData new];
                     CGSVGDocumentWriteToData(rendition.svgDocument, (__bridge CFMutableDataRef)data, NULL);
@@ -291,7 +301,7 @@ NSString * const kAssetCatalogReaderErrorDomain = @"br.com.guilhermerambo.AssetC
                 NSBitmapImageRep *imageRep = [[NSBitmapImageRep alloc] initWithCGImage:rendition.unslicedImage];
                 imageRep.size = NSMakeSize(CGImageGetWidth(rendition.unslicedImage), CGImageGetHeight(rendition.unslicedImage));
 
-                NSString *const filename = [self filenameForAssetNamed:[self cleanupRenditionName:rendition.name] scale:rendition.scale presentationState:key.themeState];
+                NSString *const filename = [self makeUniqueFilename:[self filenameForAssetNamed:[self cleanupRenditionName:rendition.name] scale:rendition.scale presentationState:key.themeState]];
                 NSDictionary *desc = [self imageDescriptionWithName:rendition.name filename:filename representation:imageRep contentsData:^NSData *{
                     return [imageRep representationUsingType:NSBitmapImageFileTypePNG properties:@{NSImageInterlaced:@(NO)}];
                 }];
@@ -309,7 +319,7 @@ NSString * const kAssetCatalogReaderErrorDomain = @"br.com.guilhermerambo.AssetC
             } else if (rendition.data && rendition.data.length > 0) {
                 // Handle non-image data (documents, etc.)
                 NSString *extension = [self fileExtensionForData:rendition.data name:rendition.name];
-                NSString *filename = [NSString stringWithFormat:@"%@.%@", [self cleanupRenditionName:rendition.name], extension];
+                NSString *filename = [self makeUniqueFilename:[NSString stringWithFormat:@"%@.%@", [self cleanupRenditionName:rendition.name], extension]];
                 
                 if (self.resourceConstrained) {
                     NSDictionary *desc = @{
@@ -551,6 +561,35 @@ NSString * const kAssetCatalogReaderErrorDomain = @"br.com.guilhermerambo.AssetC
     return _catalogHasRetinaContent;
 }
 
+- (NSString *)makeUniqueFilename:(NSString *)filename
+{
+    // If this is the first occurrence, just use it
+    NSNumber *count = self.filenameCountMap[filename];
+    if (!count) {
+        self.filenameCountMap[filename] = @(1);
+        return filename;
+    }
+    
+    // Extract base name and extension
+    NSString *baseName = [filename stringByDeletingPathExtension];
+    NSString *extension = [filename pathExtension];
+    
+    // Increment counter
+    NSInteger currentCount = count.integerValue;
+    self.filenameCountMap[filename] = @(currentCount + 1);
+    
+    // Generate new filename with counter
+    NSString *newFilename;
+    if (extension.length > 0) {
+        newFilename = [NSString stringWithFormat:@"%@_%ld.%@", baseName, (long)currentCount, extension];
+    } else {
+        newFilename = [NSString stringWithFormat:@"%@_%ld", baseName, (long)currentCount];
+    }
+    
+    // Recursively check if the new filename is also taken
+    return [self makeUniqueFilename:newFilename];
+}
+
 - (NSDictionary *)processNamedData:(CUINamedData *)namedData
 {
     if (!namedData || !namedData.data) {
@@ -562,7 +601,7 @@ NSString * const kAssetCatalogReaderErrorDomain = @"br.com.guilhermerambo.AssetC
     
     // Determine file extension based on data content
     NSString *extension = [self fileExtensionForData:data name:name];
-    NSString *filename = [NSString stringWithFormat:@"%@.%@", name, extension];
+    NSString *filename = [self makeUniqueFilename:[NSString stringWithFormat:@"%@.%@", name, extension]];
     
     if (_resourceConstrained) {
         return @{
@@ -610,7 +649,7 @@ NSString * const kAssetCatalogReaderErrorDomain = @"br.com.guilhermerambo.AssetC
             if ([textContent containsString:@"#"] || 
                 [textContent containsString:@"##"] || 
                 [textContent containsString:@"```"] ||
-                [textContent containsString:@"["] && [textContent containsString:@"]("]) {
+                ([textContent containsString:@"["] && [textContent containsString:@"]("])) {
                 return @"md";
             }
             
